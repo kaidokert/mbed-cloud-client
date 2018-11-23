@@ -84,9 +84,48 @@ typedef struct palTLSConf {
     int cipherSuites[PAL_MAX_ALLOWED_CIPHER_SUITES + 1];  // The +1 is for the Zero Termination required by mbedTLS
 }palTLSConf_t;
 
+#if MBED_PACKETLOG
+#include <stdio.h>
+#include <time.h>
+#include <sys/time.h>
 
+void packet_log(bool input, const unsigned char *buff,size_t key_len) {
+    const char *packet_trace = getenv("PACKET_TRACE");
+    if (!packet_trace)
+        return;
 
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
 
+    int millisec = lrint(tv.tv_usec/1000.0); // Round to nearest millisec
+    if (millisec>=1000) { // Allow for rounding up to nearest second
+        millisec -=1000;
+        tv.tv_sec++;
+    }
+    struct tm *tm_info = localtime(&tv.tv_sec);
+    char buffer[32],buffer2[64];
+    strftime(buffer, 26, "%Y:%m:%d %H:%M:%S", tm_info);
+    sprintf(buffer2,"%c %s.%03d 00000000",input ? 'I' : 'O',buffer,millisec);
+    FILE *fout = fopen(packet_trace, "a");
+    fputs(buffer2,fout);
+    for(size_t i=0; i < key_len; i++) {
+        sprintf(buffer," %02X",buff[i]);
+        fputs(buffer,fout);
+    }
+    fputs("\n",fout);
+    fclose(fout);
+}
+
+void log_env_file(const char *envkey, const unsigned char *buff,size_t buff_len) {
+    const char *file_name = getenv(envkey);
+    if (!file_name)
+        return;
+    FILE *fout = fopen(file_name, "w");
+    fwrite(buff, sizeof(unsigned char),buff_len,fout);
+    fclose(fout);
+}
+
+#endif
 
 
 PAL_PRIVATE palStatus_t translateTLSErrToPALError(int32_t error) 
@@ -590,6 +629,9 @@ palStatus_t pal_plat_sslRead(palTLSHandle_t palTLSHandle, void *buffer, uint32_t
 	if (platStatus > SSL_LIB_SUCCESS)
 	{
 		*actualLen = platStatus;
+#if MBED_PACKETLOG
+        packet_log(true, (unsigned char*)buffer, len);
+#endif
 	}
 	else
 	{
@@ -618,6 +660,9 @@ palStatus_t pal_plat_sslWrite(palTLSHandle_t palTLSHandle, const void *buffer, u
 	if (platStatus > SSL_LIB_SUCCESS)
 	{
 		*bytesWritten = platStatus;
+#if MBED_PACKETLOG
+        packet_log(false, (unsigned char*)buffer, len);
+#endif
 	}
 	else
 	{
@@ -813,6 +858,9 @@ palStatus_t pal_plat_setOwnPrivateKey(palTLSConfHandle_t palTLSConf, palPrivateK
 		goto finish;
 	}
 
+#if MBED_CERT_AND_KEYLOG
+    log_env_file("SSL_CLIENT_KEY", (const unsigned char *)privateKey->buffer, privateKey->size);
+#endif
 
 	localConfigCtx->hasKeys = true;
 
@@ -840,6 +888,10 @@ palStatus_t pal_plat_setOwnCertChain(palTLSConfHandle_t palTLSConf, palX509_t* o
 		status = PAL_ERR_TLS_FAILED_TO_SET_CERT;
 	}
 
+#if MBED_CERT_AND_KEYLOG
+	log_env_file("SSL_CLIENT_CERT", (const unsigned char *)ownCert->buffer, ownCert->size);
+#endif
+
 	localConfigCtx->hasKeys = true;
 
 finish:
@@ -861,6 +913,9 @@ palStatus_t pal_plat_setCAChain(palTLSConfHandle_t palTLSConf, palX509_t* caChai
 		status = PAL_ERR_GENERIC_FAILURE;
 		goto finish;
 	}
+#if MBED_CERT_AND_KEYLOG
+    log_env_file("SSL_CACHAIN", (const unsigned char *)caChain->buffer, caChain->size);
+#endif
 	mbedtls_ssl_conf_ca_chain(localConfigCtx->confCtx, &localConfigCtx->cacert, NULL );
 
 	localConfigCtx->hasChain = true;
